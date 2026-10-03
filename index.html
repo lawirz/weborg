@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>weborg — org-mode in your browser</title>
+<link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+  <header id="doc-title-bar">
+    <span id="doc-title">WEBORG</span>
+    <span id="doc-meta"></span>
+    <span id="doc-hint">? for keybindings &middot; ` agenda</span>
+  </header>
+
+  <main id="layout">
+    <div id="org-buffer"></div>
+    <aside id="agenda-panel" class="hidden">
+      <div id="agenda-header">AGENDA</div>
+      <div id="agenda-body"></div>
+    </aside>
+  </main>
+
+  <footer id="statusline">
+    <span id="mode-badge">NORMAL</span>
+    <span id="minibuffer"></span>
+    <span id="cursor-info"></span>
+  </footer>
+
+  <!-- help overlay -->
+  <div id="help-overlay" class="overlay hidden">
+    <div id="help-popup">
+      <div id="help-title">weborg — vim-style keybindings</div>
+      <div id="help-cols"></div>
+      <div id="help-footer">Esc / q to close</div>
+    </div>
+  </div>
+
+  <input type="file" id="import-input" accept=".org,text/plain" class="hidden">
+
+  <script src="js/org.js"></script>
+  <script src="js/app.js"></script>
+</body>
+</html>
