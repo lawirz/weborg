@@ -1,0 +1,73 @@
+[33mcommit 7b0a4d12ccbbde72534866974fd3ce7204c3c8c1[m[33m ([m[1;36mHEAD[m[33m -> [m[1;32mmain[m[33m, [m[1;32mtext-first[m[33m)[m
+Author: Laurent Wirz <lwirz@lwirz.ch>
+Date:   Sun Oct 4 16:27:12 2026 +0200
+
+    text-first refactor: buffer is raw .org lines + fold keys; decorations are spans over identical chars
+    
+    - org.js: no tree model. doc = {lines, folded}; scan() derives headings,
+      planning lines, timestamps on demand; every op writes/edits raw text
+      (span-preserving nudge, CLOSED sync on typed keyword edits)
+    - full org timestamp syntax per manual: active/inactive, weekday, time
+      ranges, repeaters (+1w resolved to nearest occurrence), warning/delay
+      cookies (-5d/--2d); agenda semantics per Deadlines-and-Scheduling
+    - app.js: cursor is (line,col) in the raw line; insert edits the whole
+      line incl. stars; Enter splits text; kill/yank/undo are line/text ops;
+      fold keys remap through every edit; v1 localStorage migration
+    - tests: 36 assertions on exact buffer text; browser E2E verified
+      render-chars == raw-chars, agenda, tag view, search, structure moves
+
+[33mcommit 87062c592b1d741dcfb45f262219bb3383a8bb60[m
+Author: Laurent Wirz <lwirz@lwirz.ch>
+Date:   Sun Oct 4 16:02:08 2026 +0200
+
+    core: text-as-source-of-truth model (lines + folds, org timestamps, span-preserving edits) + full test rewrite
+
+[33mcommit 3fc14a76b0f19f408292bd98ac9447c8a9137b34[m
+Author: Laurent Wirz <lwirz@lwirz.ch>
+Date:   Sun Oct 4 14:03:49 2026 +0200
+
+    search /, sparse tag view (\), C-Enter, o/O body lines, w/b word motion, empty-buffer fix
+
+[33mcommit af70cfc0494e7c14be810cac6b772eba45645d40[m[33m ([m[1;31morigin/main[m[33m, [m[1;32msmall[m[33m)[m
+Author: weborg <weborg@local>
+Date:   Sat Oct 3 08:29:25 2026 +0200
+
+    weborg: browser org-mode clone with vim bindings
+    
+    Static, backend-free org-mode subset: heading folding, TODO state
+    cycling, tags, priorities, DEADLINE/SCHEDULED with a vim-navigable
+    calendar popup, agenda view, minibuffer commands, localStorage
+    persistence, .org import/export. Vim-style keymap (hjkl, operators,
+    counts, insert mode with jk-Esc, arrow keys supported).
+    
+    47 tests: 16 core (pure node) + 31 DOM integration (jsdom).
+    
+    app: drop no-op = binding, close prompt before help overlay, doc-meta stats
+    
+    org-native bindings: M-arrow/M-hjkl section moves, typed dates, text-first visuals
+    
+    - M-up/down (M-k/j) move section among siblings; M-left/right (M-h/l)
+      promote/demote; M-RET new sibling heading -- all capture-phase so
+      browser back/forward can't intercept. Model ops live in org.js and
+      are unit-tested.
+    - Calendar popup removed; deadline/scheduled are now typed in the
+      minibuffer (YYYY-MM-DD, DD.MM[.YYYY], today, +3d, -1w, empty clears).
+      parseDateInput moved to org.js; parseDate now rejects rolled-over
+      invalid dates (e.g. Feb 30).
+    - Tags render inline as :a:b: instead of pills; kw badges became plain
+      colored text; dropped all rounded corners/shadows/popup CSS.
+    - storage probe: works over file:// where localStorage is blocked.
+    - README rewritten for the zero-dependency story.
+    
+    drop jsdom test harness and npm scaffolding
+    
+    plain-text editing, normal-mode cursor, h/l movement, help wrap
+    
+    - i on a heading edits the whole org line as text: TODO keyword,
+      [#A] priority and :tags: are typed inline and re-parsed on commit
+    - new 'a' binding (insert after caret), 0 jumps to column 0
+    - visible block cursor in normal mode (accent-colored char at caret)
+    - h/l and arrow left/right are plain caret movement; folding stays
+      on TAB and zo/zc/zm/zr/zA (foldSubtreeAncestor removed)
+    - help overlay: key column wraps instead of overflowing into the
+      description; grid columns now responsive (auto-fit minmax)

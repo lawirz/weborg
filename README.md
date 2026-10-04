@@ -63,7 +63,10 @@ Press `?` in the app for the full cheat sheet.
 | `Enter` (insert) | split line at caret |
 | `o O` | new line below / above |
 | `jk` `Esc` | leave insert (commits text) |
-| `x dd y p` | kill line / subtree-kill / yank / paste |
+| `x` / `X` | delete char (EOL joins lines; `X` at col 0 joins up) |
+| `dw` `d$` / `cw` `c$` `cc` | delete / change word, to EOL / clear line |
+| `dd y p` | kill line or subtree / yank / paste |
+| `Ctrl-V` | paste system clipboard as real lines (both modes) |
 | `TAB` | fold/unfold heading |
 | `zo zc zm zr` | fold ops |
 | `T` / `S-TAB` | cycle TODO → STARTED → WAITING → DONE |

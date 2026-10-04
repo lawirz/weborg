@@ -486,11 +486,19 @@
 
   // Write the (possibly retyped) raw line back into the buffer; keep the
   // CLOSED stamp consistent when the TODO state changed while typing,
-  // like org-todo does.
+  // like org-todo does. A multi-line value (clipboard paste that bypassed
+  // the paste handler) is split into real lines, never squashed.
   function commitLine() {
-    const v = String(editTa.value).replace(/\n/g, ' ');
+    const v = String(editTa.value).replace(/\r\n?/g, '\n');
     const i = state.line;
     const was = O.parseHeadingLine(state.doc.lines[i]);
+    if (v.indexOf('\n') >= 0) {
+      const parts = v.split('\n');
+      state.doc.lines[i] = parts[0];
+      O.insertBlock(state.doc, i + 1, parts.slice(1));
+      markDirty();
+      return;
+    }
     if (state.doc.lines[i] !== v) {
       state.doc.lines[i] = v;
       const now = O.parseHeadingLine(v);
@@ -531,6 +539,51 @@
   }
 
   editTa.addEventListener('input', function () { markDirty(); });
+
+  // Clipboard paste inside insert mode: split pasted newlines into REAL
+  // buffer lines immediately (a one-line textarea would otherwise show
+  // only the first line and squash the rest on commit).
+  editTa.addEventListener('paste', function (e) {
+    e.preventDefault();
+    const data = ((e.clipboardData || window.clipboardData).getData('text') || '').replace(/\r\n?/g, '\n');
+    if (!data) return;
+    const caret = editTa.selectionStart;
+    const v = editTa.value;
+    const merged = v.slice(0, caret) + data + v.slice(editTa.selectionEnd);
+    const i = state.line;
+    const was = O.parseHeadingLine(state.doc.lines[i]);
+    const parts = merged.split('\n');
+    state.doc.lines[i] = parts[0];
+    if (parts.length > 1) O.insertBlock(state.doc, i + 1, parts.slice(1));
+    const now = O.parseHeadingLine(state.doc.lines[i]);
+    if (was && now) O.syncClosedOnHeadingEdit(state.doc, i, was.state, now.state);
+    markDirty();
+    // caret lands right after the pasted text
+    const endInMerged = caret + data.length;
+    const nlBefore = merged.slice(0, endInMerged).split('\n').length - 1;
+    state.line = i + nlBefore;
+    state.col = endInMerged - (merged.lastIndexOf('\n', endInMerged - 1) + 1);
+    editTa.value = state.doc.lines[state.line];
+    render();
+    startInsert('caret');
+  });
+
+  // Clipboard paste in normal mode: insert the clipboard lines below the
+  // cursor line (vim 'p' semantics, but from the system clipboard).
+  document.addEventListener('paste', function (e) {
+    if (state.mode === 'insert' || promptActive) return;   // textarea/minibuffer own it
+    const data = ((e.clipboardData || window.clipboardData).getData('text') || '').replace(/\r\n?/g, '\n');
+    if (!data) return;
+    e.preventDefault();
+    const parts = data.split('\n');
+    if (parts.length > 1 && parts[parts.length - 1] === '') parts.pop();  // trailing newline
+    const at = state.line + 1;
+    O.insertBlock(state.doc, at, parts);
+    state.line = at; state.col = 0;
+    markDirty(); snapshotSoon(); render(); renderAgenda();
+    flash('pasted ' + parts.length + ' line(s) from clipboard');
+  });
+
   editTa.addEventListener('keydown', function (e) {
     if (state.mode !== 'insert') return;
     if (e.key === 'k' && !e.ctrlKey && !e.metaKey && !e.altKey) {
@@ -582,6 +635,95 @@
     O.insertBlock(state.doc, at, killRing.slice());
     state.line = at; state.col = 0;
     markDirty(); render(); renderAgenda(); snapshotSoon();
+  }
+
+  // x: delete char under cursor; at EOL it eats the newline (join down).
+  // X: delete char before cursor; at col 0 it eats the PREVIOUS line's
+  // newline (join up) — what "delete on the first column" should do.
+  function delChar(dir) {
+    const lines = state.doc.lines;
+    const i = state.line;
+    if (dir > 0) {
+      const t = lines[i];
+      if (state.col < t.length) {
+        lines[i] = t.slice(0, state.col) + t.slice(state.col + 1);
+      } else if (i < lines.length - 1) {
+        const next = lines[i + 1];
+        O.deleteLine(state.doc, i + 1);
+        lines[i] = t + next;
+      } else return;
+    } else {
+      if (state.col > 0) {
+        state.col -= 1;
+        const t = lines[i];
+        lines[i] = t.slice(0, state.col) + t.slice(state.col + 1);
+      } else if (i > 0) {
+        const prev = lines[i - 1];
+        lines[i - 1] = prev + lines[i];
+        O.deleteLine(state.doc, i);
+        state.line = i - 1;
+        state.col = prev.length;
+      } else return;
+    }
+    markDirty(); snapshotSoon(); render();
+  }
+
+  // ------------------------------------------------------------- operators
+  // d/c + motion: dw, cw, d$, c$, dd (line/section), cc (clear line).
+  // Deletions happen on the raw text; ranges never cross into structure
+  // except dd/cc which act on the whole line/section.
+  function wordRangeEnd(count) {
+    const t = curLineText();
+    let col = state.col;
+    for (let c = 0; c < (count || 1); c++) {
+      // same logic as wordDelta(+1) but from a local position
+      let i = col;
+      if (i < t.length && WORD_RE.test(t[i])) while (i < t.length && WORD_RE.test(t[i])) i++;
+      while (i < t.length && !WORD_RE.test(t[i])) i++;
+      if (i === col) break;
+      col = i;
+    }
+    return Math.min(col, t.length);
+  }
+  function deleteRange(from, to) {
+    const t = state.doc.lines[state.line];
+    state.doc.lines[state.line] = t.slice(0, from) + t.slice(to);
+    state.col = Math.min(from, state.doc.lines[state.line].length);
+  }
+  function runOperator(op, motion, count) {
+    if (motion === 'w' || motion === 'W') {
+      const to = wordRangeEnd(count || 1);
+      if (to <= state.col) { flash('nothing to ' + op + ' here', 'hint'); return; }
+      deleteRange(state.col, to);
+      markDirty(); snapshotSoon();
+      if (op === 'c') { render(); startInsert('caret'); return; }
+      return;
+    }
+    if (motion === '$') {
+      deleteRange(state.col, curLineText().length);
+      markDirty(); snapshotSoon();
+      if (op === 'c') { render(); startInsert('caret'); return; }
+      return;
+    }
+    if (motion === 'd' && op === 'd') { dd(); return; }
+    if (motion === 'd') {   // cd? treat as clear-line
+      const r = sectionRange();
+      killRing = r ? state.doc.lines.slice(r[0], r[1]) : [state.doc.lines[state.line]];
+      if (r) O.deleteBlock(state.doc, r[0], r[1]);
+      else O.deleteLine(state.doc, state.line);
+      if (state.line >= state.doc.lines.length) state.line = Math.max(0, state.doc.lines.length - 1);
+      state.col = Math.min(state.col, curLineText().length);
+      markDirty(); render(); renderAgenda(); snapshotSoon();
+      return;
+    }
+    if (motion === 'c' && op === 'c') {
+      const h = O.parseHeadingLine(state.doc.lines[state.line]);
+      // cc clears the line but keeps the stars (structure is sacred)
+      state.doc.lines[state.line] = h ? '*'.repeat(h.level) + ' ' : '';
+      state.col = state.doc.lines[state.line].length;
+      markDirty(); render(); startInsert('caret'); return;
+    }
+    // unknown motion: cancel silently
   }
 
   // ------------------------------------------------------------- folding
@@ -700,7 +842,11 @@
       ['I / A', 'raw line start / end'],
       ['Enter (insert)', 'split the line at the caret'],
       ['o / O', 'empty line below / above'],
-      ['x / dd', 'delete line — on a heading: subtree'],
+      ['x / X', 'delete char (at EOL: join lines; X at col 0 joins up)'],
+      ['d w / d $', 'delete word / to end of line'],
+      ['c w / c $', 'delete + insert word / to end of line'],
+      ['dd', 'kill line — on a heading: whole subtree'],
+      ['cc', 'clear line (keeps the stars), enter insert'],
       ['y / p', 'yank line/subtree · paste below section'],
       ['Esc / jk', 'back to normal (commits text)'],
       ['u / Ctrl-R', 'undo / redo'],
@@ -790,7 +936,7 @@
     return n;
   }
 
-  let pendingG = false, pendingZ = false, pendingMap = null, pendingOp = null, pendingD = false;
+  let pendingG = false, pendingZ = false, pendingMap = null, pendingOp = null, opPending = null;
 
   function onKeyDown(e) {
     if (!$('#help-overlay').classList.contains('hidden')) {
@@ -824,9 +970,10 @@
     if (k === '0' && !countBuf) { state.col = 0; render(); return; }
     const count = takeCount();
 
-    if (pendingD) {
-      pendingD = false;
-      if (k === 'd') dd();
+    if (opPending) {
+      const op = opPending; opPending = null;
+      runOperator(op.op, k, op.count);
+      if (state.mode !== 'insert') render();
       return;
     }
     if (pendingMap === 't') {
@@ -879,8 +1026,10 @@
         state.line = at; state.col = 0;
         markDirty(); render(); startInsert('start'); return;
       }
-      case 'x': dd(); break;
-      case 'd': pendingD = true; flash('d…', 'hint'); return;
+      case 'x': for (let c2 = 0; c2 < (count || 1); c2++) delChar(+1); break;
+      case 'X': for (let c2 = 0; c2 < (count || 1); c2++) delChar(-1); break;
+      case 'd': opPending = { op: 'd', count: count }; flash('d: w $ d', 'hint'); return;
+      case 'c': opPending = { op: 'c', count: count }; flash('c: w $ c', 'hint'); return;
       case 'y': yank(); break;
       case 'p': paste(); break;
       case 'Tab': {
@@ -965,11 +1114,13 @@
       if (i == null) {
         O.insertLine(state.doc, state.line + 1, '* ');
         at = state.line + 1;
+        state.col = 2;                      // after '* ' -> at the title
       } else {
         at = O.insertHeadingBelow(state.doc, i, false);
+        state.col = (O.parseHeadingLine(state.doc.lines[at]) || { level: 1 }).level + 1;
       }
-      state.line = at; state.col = 0;
-      markDirty(); snapshotSoon(); render(); startInsert('start');
+      state.line = at;
+      markDirty(); snapshotSoon(); render(); startInsert('caret');
       return;
     }
     if (e.ctrlKey && e.shiftKey && e.key === 'Enter') {
@@ -980,11 +1131,13 @@
       if (i == null) {
         O.insertLine(state.doc, state.line + 1, '* ');
         at = state.line + 1;
+        state.col = 2;
       } else {
         at = O.insertHeadingBelow(state.doc, i, true);
+        state.col = (O.parseHeadingLine(state.doc.lines[at]) || { level: 1 }).level + 1;
       }
-      state.line = at; state.col = 0;
-      markDirty(); snapshotSoon(); render(); startInsert('start');
+      state.line = at;
+      markDirty(); snapshotSoon(); render(); startInsert('caret');
       return;
     }
     if (e.altKey && !e.ctrlKey) {
@@ -1090,7 +1243,7 @@
   window.__weborg = {
     state, O, render, rows,
     debug: function () {
-      return { pendingD: pendingD, pendingMap: pendingMap, pendingG: pendingG,
+      return { opPending: opPending && opPending.op, pendingMap: pendingMap, pendingG: pendingG,
                pendingZ: pendingZ, pendingOp: pendingOp, countBuf: countBuf,
                mode: state.mode, promptActive: !!promptActive };
     },
