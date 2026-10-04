@@ -1,4 +1,6 @@
-/* weborg — plain text-first dark theme. Colors only; no pills, shadows, rounded corners. */
+/* weborg — plain text-first dark theme. Colors only; nothing changes the
+ * character grid: every decoration here wraps raw text spans of the same
+ * width as the text it covers, so the caret column is always exact. */
 :root {
   --bg: #12141a;
   --bg-alt: #1a1d26;
@@ -49,8 +51,9 @@ body {
   position: relative;
   line-height: 1.55;
 }
-.line { white-space: pre-wrap; word-break: break-word; padding-left: 1em; }
-.headline { padding-left: .25em; }
+.line { white-space: pre-wrap; word-break: break-word; padding-left: .25em; }
+
+/* heading decorations: color only — the text is the raw org line */
 .headline .stars { color: var(--muted); }
 .level-1 .stars { color: var(--purple); }
 .level-2 .stars { color: var(--accent); }
@@ -61,7 +64,7 @@ body {
 .headline.level-3 .hl-text { color: #c0caf5; }
 
 .content { color: var(--fg); }
-.content-text { opacity: .92; }
+.hl-plain { color: inherit; }
 
 /* TODO keywords: plain colored text, like org font-lock */
 .kw { font-weight: 700; }
@@ -71,21 +74,30 @@ body {
 .kw-done { color: var(--green); }
 
 .prio { color: var(--yellow); font-weight: 700; }
+.tags { color: var(--cyan); }
 
-/* tags: inline :a:b: text, no pills */
-.tags { margin-left: .7em; color: var(--cyan); font-size: .9em; }
+/* planning lines: DEADLINE / SCHEDULED / CLOSED exactly as typed */
+.planning { color: var(--muted); }
+.prop-key { color: var(--purple); }
+.prop-deadline .prop-key { color: var(--orange); }
+.prop-scheduled .prop-key { color: var(--accent); }
+.prop-closed .prop-key { color: var(--green); }
 
-.dl { font-size: .85em; margin-left: .8em; }
-.dl-soon { color: var(--orange); }
-.dl-overdue { color: var(--red); font-weight: 700; }
-.sch { font-size: .85em; color: var(--muted); margin-left: .5em; }
-.foldmark { color: var(--muted); }
+/* timestamps wherever they occur (title, body, planning) */
+.ts { color: var(--cyan); }
+.ts-soon { color: var(--orange); }
+.ts-overdue { color: var(--red); font-weight: 700; }
+.ts-inactive { color: var(--muted); font-style: normal; }
+
+.folded .stars::after { content: '⋯'; margin-left: .4em; color: var(--muted); }
+
+.search-hit { background: var(--yellow); color: var(--bg); }
 
 .cursor-line { background: var(--cursor); }
 body.mode-insert .cursor-line { background: #2b3d3f; }
 .cursor-caret { background: var(--accent); color: var(--bg); }
 
-/* insert overlay */
+/* insert overlay: edits the RAW line, so it aligns character-for-character */
 #edit-area {
   position: absolute;
   z-index: 5;
@@ -113,7 +125,6 @@ body.mode-insert .cursor-line { background: #2b3d3f; }
 }
 #mode-badge { font-weight: 700; min-width: 4.5em; color: var(--accent); }
 #mode-badge.mode-insert { color: var(--green); }
-#mode-badge.mode-op { color: var(--red); }
 #minibuffer { flex: 1; color: var(--yellow); overflow: hidden; white-space: nowrap; }
 #minibuffer .warn { color: var(--red); }
 #minibuffer .hint { color: var(--muted); }
@@ -146,7 +157,7 @@ body.mode-insert .cursor-line { background: #2b3d3f; }
 .agenda-item:hover { background: var(--cursor); }
 .agenda-item.overdue { color: var(--red); }
 .agenda-kind { color: var(--muted); font-size: .8em; }
-.agenda-state { color: var(--yellow); font-size: .8em; margin-right: .3em; }
+.agenda-when { color: var(--cyan); font-size: .8em; margin-left: .3em; }
 .agenda-empty { color: var(--muted); }
 .agenda-gap { height: .5em; }
 

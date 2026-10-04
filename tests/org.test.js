@@ -173,6 +173,27 @@ t('setDate inserts planning line, preserves time+repeater on change', function (
   O.setDate(d, 0, 'scheduled', '2026-10-21');
   assert.strictEqual(d.lines[1], '  SCHEDULED: <2026-10-21 Wed>');
 });
+t('D-stamp: CLOSED lands after existing planning lines, not before DEADLINE', function () {
+  const d = doc('* TODO Task\n  DEADLINE: <2026-10-09 Mon>\n');
+  O.stampClosed(d, 0);
+  const lines = O.textOf(d).split('\n');
+  assert.ok(/^  CLOSED: \[/.test(lines[2]), JSON.stringify(lines));
+  const s = O.scan(d);
+  assert.ok(s.headings[0].deadline, 'deadline still found');
+  assert.ok(s.headings[0].closed, 'closed found below it');
+});
+t('cycleState DONE→nil removes CLOSED; nil→DONE adds it back', function () {
+  const d = doc('* x\n');
+  O.cycleState(d, 0); O.cycleState(d, 0); O.cycleState(d, 0); O.cycleState(d, 0);  // ...DONE
+  assert.ok(d.lines.some(l => /^\s+CLOSED:/.test(l)));
+  O.cycleState(d, 0);
+  assert.ok(!d.lines.some(l => /^\s+CLOSED:/.test(l)));
+});
+t('setDate preserves repeater/delay cookie when moving the date', function () {
+  const d = doc('* t\n  DEADLINE: <2026-10-05 Mon -3d>\n');
+  O.setDate(d, 0, 'deadline', '2026-11-02');
+  assert.strictEqual(d.lines[1], '  DEADLINE: <2026-11-02 Mon -3d>');
+});
 t('nudgeDate edits only the timestamp span', function () {
   const d = doc('* t\n  DEADLINE: <2026-10-05 Mon 09:00-09:30> extra\n');
   O.nudgeDate(d, 0, 'deadline', 3);

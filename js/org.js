@@ -343,7 +343,6 @@
     });
     return true;
   }
-
   // ------------------------------------------------------------- heading ops
   function editHeading(doc, i, mut) {
     const f = parseHeadingLine(doc.lines[i]);
@@ -359,15 +358,17 @@
     return rec ? rec.line : null;
   }
   // Write (replace or insert) a planning line for the section at heading i.
-  // Returns the line index used. Insertion keeps org order CLOSED, SCHEDULED,
-  // DEADLINE directly below the heading.
+  // Returns the line index used. A new key is appended after the heading's
+  // existing planning lines (so stamps accumulate DEADLINE…CLOSED, as org's
+  // completion does); scan() accepts any order.
   function setPropLine(doc, i, key, tsRaw) {
     const s = scan(doc);
     const h = s.headings[i]; if (!h) return -1;
-    const existing = findPropLine(s, i, key.toLowerCase());
+    const lc = key.toLowerCase();
+    const existing = findPropLine(s, i, lc);
     if (existing != null) { doc.lines[existing] = '  ' + key + ': ' + tsRaw; return existing; }
     let at = h.line + 1;
-    ['closed', 'scheduled', 'deadline'].forEach(function (k) {
+    ['scheduled', 'deadline', 'closed'].forEach(function (k) {
       const l = findPropLine(s, i, k);
       if (l != null && l >= at) at = l + 1;
     });
