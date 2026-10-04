@@ -1,4 +1,6 @@
-/* Core parser/model tests. Run: node tests/org.test.js */
+/* Core tests — the document is TEXT. Run: node tests/org.test.js
+ * Every assertion either checks the exact buffer text or the view derived
+ * from it. If a feature can't be expressed in .org text, it can't exist. */
 'use strict';
 const assert = require('assert');
 const O = require('../js/org.js');
@@ -8,261 +10,295 @@ function t(name, fn) {
   try { fn(); passed++; console.log('ok   ' + name); }
   catch (e) { failed++; console.log('FAIL ' + name + '\n     ' + e.message); }
 }
+function doc(src) { return O.makeDoc(src); }
+function text(d) { return O.textOf(d); }
 
-t('parses headings with levels', function () {
-  const d = O.parse('* One\n** Two\n*** Three\n');
-  assert.strictEqual(d.root.children.length, 1);
-  assert.strictEqual(d.root.children[0].children[0].children[0].headline, 'Three');
+// ------------------------------------------------------------------ doc = text
+t('makeDoc/textOf is lossless', function () {
+  const src = '#+TITLE: X\n* A\nbody\n\n** B\n';
+  const d = doc(src);
+  assert.strictEqual(O.textOf(d), src);
+  assert.strictEqual(d.lines.length, 5);
+});
+t('CRLF normalized, empty buffer keeps one line', function () {
+  assert.deepStrictEqual(doc('a\r\nb\n').lines, ['a', 'b']);
+  const e = doc('');
+  assert.strictEqual(e.lines.length, 1);
+  assert.strictEqual(text(e), '\n');
 });
 
-t('parses TODO keyword and tags', function () {
-  const d = O.parse('** TODO Buy milk       :shopping:errand:\n');
-  const n = d.root.children[0];
-  assert.strictEqual(n.state, 'TODO');
-  assert.strictEqual(n.headline, 'Buy milk');
-  assert.deepStrictEqual(n.tags, ['shopping', 'errand']);
+// ------------------------------------------------------------------ headings
+t('parseHeadingLine keeps raw text + spans, changes nothing', function () {
+  const raw = '** TODO [#A] Buy milk       :shopping:errand:';
+  const h = O.parseHeadingLine(raw);
+  assert.strictEqual(h.raw, raw);
+  assert.strictEqual(h.level, 2);
+  assert.strictEqual(h.state, 'TODO');
+  assert.strictEqual(h.priority, 'A');
+  assert.strictEqual(h.tags.join(','), 'shopping,errand');
+  assert.strictEqual(h.title, 'Buy milk');
+  // the spans slice the ORIGINAL line — decorations never touch the text
+  assert.strictEqual(raw.slice(h.spans.stars[0], h.spans.stars[1]), '**');
+  assert.strictEqual(raw.slice(h.spans.state[0], h.spans.state[1]), 'TODO');
+  assert.strictEqual(raw.slice(h.spans.priority[0], h.spans.priority[1]), '[#A]');
+  assert.strictEqual(raw.slice(h.spans.tags[0], h.spans.tags[1]), ':shopping:errand:');
+  assert.ok(h.spans.title[0] <= raw.indexOf('Buy') && raw.indexOf('milk') < h.spans.title[1]);
+});
+t('bare stars, no trailing space, still a heading', function () {
+  assert.strictEqual(O.parseHeadingLine('***').level, 3);
+  assert.strictEqual(O.parseHeadingLine('**** x').level, 4);
+});
+t('unknown ALLCAPS is not a TODO state', function () {
+  const h = O.parseHeadingLine('* NOODLE weird line');
+  assert.strictEqual(h.state, null);
+  assert.strictEqual(h.title, 'NOODLE weird line');
+});
+t('body line is not a heading; indented stars are not headings', function () {
+  assert.strictEqual(O.parseHeadingLine('regular text'), null);
+  assert.strictEqual(O.parseHeadingLine('  * fake'), null);
 });
 
-t('parses priority', function () {
-  const d = O.parse('*** TODO [#A] Fix thing :work:\n');
-  const n = d.root.children[0];
-  assert.strictEqual(n.state, 'TODO');
-  assert.strictEqual(n.priority, 'A');
-  assert.strictEqual(n.headline, 'Fix thing');
-  assert.deepStrictEqual(n.tags, ['work']);
+// ------------------------------------------------------------------ timestamps
+t('plain active timestamp parsed with all decorations', function () {
+  const line = 'DEADLINE: <2004-02-29 Sun -5d>';
+  const ts = O.firstTimestamp(line);
+  assert.strictEqual(ts.date, '2004-02-29');
+  assert.strictEqual(ts.weekday, 'Sun');
+  assert.strictEqual(ts.active, true);
+  assert.strictEqual(ts.delay.n, 5);
+  assert.strictEqual(ts.delay.unit, 'd');
+  // exact span back into the line
+  assert.strictEqual(line.slice(ts.start, ts.end), '<2004-02-29 Sun -5d>');
+});
+t('time and time-range timestamps', function () {
+  const a = O.firstTimestamp('meet <2006-11-01 Wed 19:15> ok');
+  assert.strictEqual(a.time, '19:15');
+  const b = O.firstTimestamp('<2006-11-02 Thu 10:00-12:00>');
+  assert.strictEqual(b.time, '10:00');
+  assert.strictEqual(b.timeEnd, '12:00');
+});
+t('repeater parsed and effective date advances', function () {
+  const ts = O.firstTimestamp('<2007-05-16 Wed 12:30 +1w>');
+  assert.deepStrictEqual(ts.repeater, { n: 1, unit: 'w' });
+  assert.strictEqual(ts.date, '2007-05-16');
+  // nearest occurrence on-or-after the reference day (2007-06-13 IS an occurrence)
+  assert.strictEqual(O.effectiveDate(ts, '2007-06-13'), '2007-06-13');
+  assert.strictEqual(O.effectiveDate(ts, '2007-06-14'), '2007-06-20');
+});
+t('inactive [..] timestamp is flagged inactive', function () {
+  const ts = O.firstTimestamp('note [2006-11-01 Wed] here');
+  assert.strictEqual(ts.active, false);
+});
+t('double-dash delay cookie parses', function () {
+  const ts = O.firstTimestamp('SCHEDULED: <2004-12-25 Sat --2d>');
+  assert.strictEqual(ts.delay.sign, '--');
+  assert.strictEqual(ts.delay.n, 2);
+});
+t('invalid calendar date rejected', function () {
+  assert.strictEqual(O.firstTimestamp('<2026-02-30 Mon>'), null);
+});
+t('tsText always writes the weekday (org convention)', function () {
+  assert.strictEqual(O.tsText('2026-10-04'), '<2026-10-04 Sun>');
 });
 
-t('priority survives without keyword', function () {
-  const d = O.parse('** [#C] Plain headline\n');
-  const n = d.root.children[0];
-  assert.strictEqual(n.priority, 'C');
-  assert.strictEqual(n.headline, 'Plain headline');
-});
-
-t('parses deadline/scheduled/closed', function () {
-  const d = O.parse([
+// ------------------------------------------------------------------ properties
+t('scan finds DEADLINE/SCHEDULED/CLOSED under a heading', function () {
+  const d = doc([
     '* TODO Task',
-    '  DEADLINE: <2026-10-05> +1w',
-    '  SCHEDULED: <2026-10-01>',
-    '  CLOSED: <2026-09-30>',
+    '  DEADLINE: <2026-10-05 Mon +1w>',
+    '  SCHEDULED: <2026-10-01 Thu>',
+    '  CLOSED: [2026-09-30 Wed]',
     'body line',
   ].join('\n'));
-  const n = d.root.children[0];
-  assert.strictEqual(n.deadline, '2026-10-05');
-  assert.strictEqual(n.scheduled, '2026-10-01');
-  assert.strictEqual(n.closed, '2026-09-30');
-  assert.deepStrictEqual(n.content, ['body line']);
+  const s = O.scan(d);
+  const h = s.headings[0];
+  assert.strictEqual(h.deadline.line, 1);
+  assert.strictEqual(h.deadline.ts.date, '2026-10-05');
+  assert.strictEqual(h.deadline.ts.repeater.n, 1);
+  assert.strictEqual(h.scheduled.line, 2);
+  assert.strictEqual(h.closed.line, 3);
+});
+t('scan collects plain timestamps as events', function () {
+  const d = doc('* Meet Peter\n  <2026-11-01 Sun 19:15>\n  off days:\n  <2026-11-06 Fri>\n').lines.join('\n');
+  const s = O.scan(O.makeDoc(d));
+  const evs = s.headings[0].events;
+  assert.strictEqual(evs.length, 2);
+  assert.strictEqual(evs[0].ts.time, '19:15');
+  assert.strictEqual(evs[1].line, 3);
 });
 
-t('unknown ALLCAPS is not eaten as TODO state', function () {
-  const d = O.parse('* NOODLE weird state line\n');
-  const n = d.root.children[0];
-  assert.strictEqual(n.state, null);
-  assert.strictEqual(n.headline, 'NOODLE weird state line');
+// ------------------------------------------------------------------ folding
+t('fold hides the section, keeps the heading line', function () {
+  const d = doc('* A\n  body a\n** B\n** C\n');
+  assert.strictEqual(O.visibleLines(d).length, 4);
+  d.folded[0] = true;
+  assert.deepStrictEqual(O.visibleLines(d), [0]);
+  d.folded[0] = false;
+  assert.strictEqual(O.visibleLines(d).length, 4);
+});
+t('fold keys survive insert/delete', function () {
+  const d = doc('* A\n* B\n  x\n* C\n');
+  d.folded[1] = true;                       // fold B (heading at line 1)
+  assert.deepStrictEqual(O.visibleLines(d), [0, 1, 3]);
+  O.insertLine(d, 0, 'intro');              // everything shifts down (intro is a visible body line)
+  assert.deepStrictEqual(O.visibleLines(d), [0, 1, 2, 4]);
+  O.deleteLine(d, 0);
+  assert.deepStrictEqual(O.visibleLines(d), [0, 1, 3]);
+});
+t('deleteBlock drops fold keys inside the removed range', function () {
+  const d = doc('* A\n** A1\n* B\n');
+  d.folded[1] = true;                       // fold A1
+  O.deleteBlock(d, 1, 2);                   // remove A1 section
+  assert.deepStrictEqual(Object.keys(d.folded), []);
 });
 
-t('TITLE line extracted', function () {
-  const d = O.parse('#+TITLE: MY DOC\n* x\n');
-  assert.strictEqual(d.docTitle, 'MY DOC');
+// ------------------------------------------------------------------ ops write text
+t('cycleState rewrites the heading line and stamps/removes CLOSED', function () {
+  const d = doc('* x\n');
+  assert.strictEqual(O.cycleState(d, 0), 'TODO');
+  assert.strictEqual(d.lines[0], '* TODO x');
+  O.cycleState(d, 0); O.cycleState(d, 0);
+  assert.strictEqual(O.cycleState(d, 0), 'DONE');
+  assert.ok(/^  CLOSED: \[\d{4}-\d{2}-\d{2} \w{3}( \d{2}:\d{2})?\]$/.test(d.lines[1]), text(d));
+  O.cycleState(d, 0);                        // DONE -> nil
+  assert.strictEqual(d.lines.length, 1);
+  assert.strictEqual(d.lines[0], '* x');
+});
+t('setDate inserts planning line, preserves time+repeater on change', function () {
+  const d = doc('* t\n  DEADLINE: <2026-10-05 Mon 09:00 +1w>\nbody\n');
+  O.setDate(d, 0, 'deadline', '2026-10-20');
+  assert.strictEqual(d.lines[1], '  DEADLINE: <2026-10-20 Tue 09:00 +1w>');
+  O.setDate(d, 0, 'deadline', null);
+  assert.strictEqual(d.lines.length, 2);
+  O.setDate(d, 0, 'scheduled', '2026-10-21');
+  assert.strictEqual(d.lines[1], '  SCHEDULED: <2026-10-21 Wed>');
+});
+t('nudgeDate edits only the timestamp span', function () {
+  const d = doc('* t\n  DEADLINE: <2026-10-05 Mon 09:00-09:30> extra\n');
+  O.nudgeDate(d, 0, 'deadline', 3);
+  assert.strictEqual(d.lines[1], '  DEADLINE: <2026-10-08 Thu 09:00-09:30> extra');
+});
+t('setTags/setPriority rewrite heading only', function () {
+  const d = doc('*** TODO [#B] Task name\n');
+  O.setTags(d, 0, ['work', 'deep:focus', 'work']);
+  assert.strictEqual(d.lines[0], '*** TODO [#B] Task name  :work:deepfocus:');
+  O.setPriority(d, 0, 'A');
+  assert.strictEqual(d.lines[0], '*** TODO [#A] Task name  :work:deepfocus:');
+  O.setPriority(d, 0, 'A');   // toggle off
+  assert.ok(d.lines[0].indexOf('[#') === -1);
 });
 
-t('serialize round-trip', function () {
-  const src = [
-    '#+TITLE: RT',
-    '* TODO Parent       :tag1:',
-    '  DEADLINE: <2026-11-01>',
-    '  some body',
-    '** DONE [#B] Child  :a:b:',
-    '   CLOSED: <2026-10-02>',
-    '   more',
-  ].join('\n');
-  const d = O.parse(src);
-  const out = O.serialize(d.root, d.docTitle);
-  const d2 = O.parse(out);
-  const p = d2.root.children[0];
-  assert.strictEqual(p.headline, 'Parent');
-  assert.strictEqual(p.deadline, '2026-11-01');
-  assert.deepStrictEqual(p.tags, ['tag1']);
-  const c = p.children[0];
-  assert.strictEqual(c.state, 'DONE');
-  assert.strictEqual(c.priority, 'B');
-  assert.strictEqual(c.closed, '2026-10-02');
-  assert.deepStrictEqual(c.tags, ['a', 'b']);
-  assert.ok(out.includes('some body'), 'body preserved');
+// ------------------------------------------------------------------ structure
+t('insertHeadingBelow: sibling after whole section (M-RET)', function () {
+  const d = doc('* A\n** A1\nbody\n* Z\n');
+  const at = O.insertHeadingBelow(d, 0, false);
+  assert.strictEqual(at, 3);
+  assert.strictEqual(text(d), '* A\n** A1\nbody\n* \n* Z\n');
+  const c = O.insertHeadingBelow(d, 0, true);   // child at section end
+  assert.strictEqual(c, 3);
+  assert.strictEqual(d.lines[3], '** ');
+  assert.strictEqual(text(d), '* A\n** A1\nbody\n** \n* \n* Z\n');
+});
+t('moveSection swaps sibling sections whole', function () {
+  const d = doc('* A\n  a-body\n* B\n** B1\n* C\n');
+  O.moveSection(d, 0, 1);
+  assert.strictEqual(text(d), '* B\n** B1\n* A\n  a-body\n* C\n');
+  O.moveSection(d, 3, -1);
+  assert.strictEqual(text(d), '* B\n** B1\n* A\n  a-body\n* C\n');
+});
+t('moveSection blocks at boundary', function () {
+  const d = doc('* A\n** A1\n* B\n');
+  assert.strictEqual(O.moveSection(d, 2, 1), false);   // last top-level
+  assert.strictEqual(O.moveSection(d, 1, -1), false);  // A1 above is parent
+});
+t('changeLevel rewrites every star in the subtree', function () {
+  const d = doc('* A\n* B\n** B1\n');
+  O.changeLevel(d, 1, 1);                              // demote B subtree
+  assert.strictEqual(text(d), '* A\n** B\n*** B1\n');
+  O.changeLevel(d, 1, -1);
+  assert.strictEqual(text(d), '* A\n* B\n** B1\n');
+  const d2 = doc('* Top\n');
+  assert.strictEqual(O.changeLevel(d2, 0, 1), false);   // nothing to hang under
 });
 
-t('flatten respects collapsed state', function () {
-  const d = O.parse('* A\n  body a\n** B\n** C\n');
-  const all = O.flatten(d.root);
-  assert.strictEqual(all.length, 4); // A headline, body, B, C
-  d.root.children[0].collapsed = true;
-  const folded = O.flatten(d.root);
-  assert.strictEqual(folded.length, 1);
-});
-
-t('cycleState walks TODO→STARTED→WAITING→DONE→nil', function () {
-  const d = O.parse('* x\n');
-  const n = d.root.children[0];
-  assert.strictEqual(O.cycleState(n), 'TODO');
-  assert.strictEqual(O.cycleState(n), 'STARTED');
-  assert.strictEqual(O.cycleState(n), 'WAITING');
-  assert.strictEqual(O.cycleState(n), 'DONE');
-  assert.ok(n.closed, 'closed stamped on DONE');
-  assert.strictEqual(O.cycleState(n), null);
-  assert.strictEqual(n.closed, null);
-});
-
-t('addTag/removeTag sanitize colons', function () {
-  const n = O.makeNode({ headline: 'x' });
-  O.addTag(n, 'pro:j:ect');
-  assert.deepStrictEqual(n.tags, ['project']);
-  O.addTag(n, 'project');
-  assert.strictEqual(n.tags.length, 1, 'no dupes');
-  O.removeTag(n, 'project');
-  assert.strictEqual(n.tags.length, 0);
-});
-
-t('deadline nudge with addDays across month', function () {
-  assert.strictEqual(O.addDays('2026-10-31', 1), '2026-11-01');
-  assert.strictEqual(O.addDays('2026-01-01', -1), '2025-12-31');
-});
-
-t('agenda lists upcoming + overdue, done excluded', function () {
+// ------------------------------------------------------------------ agenda
+t('agenda: overdue first, horizon, done excluded', function () {
   const today = O.todayStr();
-  const soon = O.addDays(today, 2);
-  const late = O.addDays(today, 20);   // beyond 14d window
-  const past = O.addDays(today, -2);
-  const d = O.parse([
+  const d = doc([
     '* TODO Due soon',
-    '  DEADLINE: <' + soon + '>',
+    '  DEADLINE: <' + O.addDays(today, 2) + '>',
     '* TODO Way out',
-    '  DEADLINE: <' + late + '>',
+    '  DEADLINE: <' + O.addDays(today, 40) + '>',
     '* TODO Overdue',
-    '  DEADLINE: <' + past + '>',
+    '  DEADLINE: <' + O.addDays(today, -2) + '>',
     '* DONE Overdue done',
-    '  DEADLINE: <' + past + '>',
+    '  DEADLINE: <' + O.addDays(today, -2) + '>',
   ].join('\n'));
-  const items = O.agenda(d.root, 14);
+  const items = O.agenda(d, 14);
   assert.strictEqual(items.length, 2);
-  assert.strictEqual(items[0].node.headline, 'Overdue'); // overdue first
+  assert.strictEqual(items[0].headline, 'Overdue');
   assert.strictEqual(items[0].overdue, true);
-  assert.strictEqual(items[1].node.headline, 'Due soon');
+  assert.strictEqual(items[1].headline, 'Due soon');
+});
+t('agenda: plain timestamp event shows exactly on its day', function () {
+  const today = O.todayStr();
+  const d = doc('* Meet\n  <' + today + ' ' + O.dayName(today) + ' 19:15>\n' +
+                '* Far\n  <' + O.addDays(today, 30) + '>\n').lines.join('\n');
+  const items = O.agenda(O.makeDoc(d), 14);
+  assert.strictEqual(items.length, 1);
+  assert.strictEqual(items[0].kind, 'event');
+});
+t('agenda: inactive timestamps never appear', function () {
+  const today = O.todayStr();
+  const d = doc('* note\n  [' + today + ' ' + O.dayName(today) + ']\n');
+  assert.strictEqual(O.agenda(d, 14).length, 0);
+});
+t('agenda: repeating event resolves to nearest occurrence', function () {
+  const d = doc('* Pick up Sam\n  <2007-05-16 Wed 12:30 +1w>\n');
+  const items = O.agenda(d, 7);   // today is any date; repeater advances past it
+  assert.strictEqual(items.length, 1);
+  assert.ok(items[0].date >= O.todayStr());
 });
 
-t('indent/outdent re-levels subtree', function () {
-  const d = O.parse('* A\n* B\n** B1\n');
-  O.linkParents(d.root);
-  const A = d.root.children[0], B = d.root.children[1];
-  // move B under A: emulate via app's indentNode logic on model level
-  // (direct model op): remove B from root, push into A
-  d.root.children.splice(1, 1);
-  A.children.push(B);
-  B.level = 2; B.children[0].level = 3;
-  const out = O.serialize(d.root);
-  assert.ok(/\* A\n\*\* B\n\*\*\* B1/.test(out), out);
-});
-
-t('insertSiblingAfter keeps tree consistent', function () {
-  const d = O.parse('* A\n* C\n');
-  O.linkParents(d.root);
-  const sib = O.insertSiblingAfter(d.root.children[0]);
-  sib.headline = 'B';
-  const out = O.serialize(d.root);
-  assert.ok(out.includes('* A\n* B\n* C'), out);
-});
-
-t('blank body lines preserved within node content', function () {
-  const d = O.parse('* A\nfirst\n\nsecond\n* B\n');
-  const a = d.root.children[0];
-  assert.deepStrictEqual(a.content, ['first', '', 'second']);
-});
-
-t('moveNodeAmongSiblings swaps neighbours (M-down/M-up)', function () {
-  const d = O.parse('* A\n* B\n* C\n');
-  const A = d.root.children[0], B = d.root.children[1];
-  assert.strictEqual(O.moveNodeAmongSiblings(d.root, A, 1), true);   // A down
-  const out = O.serialize(d.root);
-  assert.ok(/^\* B\n\* A\n\* C/m.test(out), out);
-  assert.strictEqual(O.moveNodeAmongSiblings(d.root, A, -1), true);   // back up
-  assert.strictEqual(O.moveNodeAmongSiblings(d.root, d.root.children[0], -1), false); // at top
-});
-
-t('moveNodeAmongSiblings carries subtree as a unit', function () {
-  const d = O.parse('* A\n** A1\n* B\n');
-  const A = d.root.children[0];
-  assert.strictEqual(O.moveNodeAmongSiblings(d.root, A, 1), true);
-  const out = O.serialize(d.root);
-  assert.ok(/^\* B\n\* A\n\*\* A1/m.test(out), out);
-});
-
-t('demoteNode hangs under previous sibling (M-right)', function () {
-  const d = O.parse('* A\n* B\n** B1\n');
-  const B = d.root.children[1];
-  assert.strictEqual(O.demoteNode(d.root, B), true);
-  const A = d.root.children[0];
-  assert.strictEqual(d.root.children.length, 1);
-  assert.strictEqual(A.children.length, 1);
-  assert.strictEqual(B.level, 2);
-  assert.strictEqual(B.children[0].level, 3);
-  // first child cannot be demoted
-  assert.strictEqual(O.demoteNode(d.root, A), false);
-});
-
-t('promoteNode moves up next to parent (M-left)', function () {
-  const d = O.parse('* A\n** B\n*** B1\n');
-  const B = d.root.children[0].children[0];
-  assert.strictEqual(O.promoteNode(d.root, B), true);
-  assert.strictEqual(d.root.children.length, 2);
-  assert.strictEqual(B.level, 1);
-  assert.strictEqual(B.children[0].level, 2);
-  // top-level node cannot be promoted further
-  assert.strictEqual(O.promoteNode(d.root, d.root.children[0]), false);
-});
-
-t('parseDateInput accepts ISO, dotted, today, relative', function () {
-  const d = O.parseDateInput('2026-10-05');
-  assert.deepStrictEqual(d, { date: '2026-10-05' });
-  const curYear = O.todayStr().slice(0, 4);
-  assert.deepStrictEqual(O.parseDateInput('5.10'), { date: curYear + '-10-05' });
-  assert.deepStrictEqual(O.parseDateInput('05.10.2027'), { date: '2027-10-05' });
-  assert.deepStrictEqual(O.parseDateInput('today'), { date: O.todayStr() });
-  assert.deepStrictEqual(O.parseDateInput('+3d'), { date: O.addDays(O.todayStr(), 3) });
-  assert.deepStrictEqual(O.parseDateInput('-1'), { date: O.addDays(O.todayStr(), -1) });
-  assert.deepStrictEqual(O.parseDateInput('+2w'), { date: O.addDays(O.todayStr(), 14) });
-  assert.deepStrictEqual(O.parseDateInput('clear'), { clear: true });
-  assert.strictEqual(O.parseDateInput('garbage'), null);
-  assert.strictEqual(O.parseDateInput('2026-02-30'), null, 'invalid calendar date rejected');
-});
-
-t('sparseRows keeps ancestor chain + match subtree, drops the rest', function () {
-  const d = O.parse(
+// ------------------------------------------------------------------ views/stats
+t('tagViewLines keeps ancestors + full match sections', function () {
+  const d = doc(
     '* Project A          :work:\n' +
     '** Alpha             :urgent:\n' +
     '   body of alpha\n' +
     '*** AlphaChild       :urgent:\n' +
     '** Beta\n' +
     '* Project B          :home:\n' +
-    '** Gamma             :urgent:\n'
-  );
-  const isUrgent = function (n) { return n.tags.indexOf('urgent') >= 0; };
-  const rs = O.sparseRows(d.root, isUrgent);
-  const heads = rs.filter(function (r) { return r.kind === 'headline'; }).map(function (r) { return r.node.headline; });
-  // Alpha matches; its ancestor Project A is kept for structure; Alpha's subtree
-  // (body + AlphaChild) is shown. Beta (no match) is hidden. Project B kept as
-  // ancestor of Gamma; Gamma matches.
-  assert.deepStrictEqual(heads, ['Project A', 'Alpha', 'AlphaChild', 'Project B', 'Gamma']);
-  // Alpha's body line is present (match => show subtree content)
-  const bodies = rs.filter(function (r) { return r.kind === 'content'; }).map(function (r) { return r.text; });
-  assert.deepStrictEqual(bodies, ['   body of alpha']);
-  // Project A itself does NOT match -> its own body/content would be omitted,
-  // and Beta (sibling, non-matching, no matching descendant) is gone.
-  assert.ok(heads.indexOf('Beta') === -1, 'non-matching sibling excluded');
+    '** Gamma             :urgent:\n');
+  const isUrgent = function (h) { return h.tags.indexOf('urgent') >= 0; };
+  const keep = O.tagViewLines(d, isUrgent);
+  const s = O.scan(d);
+  const shown = keep.map(function (i) { return d.lines[i]; });
+  assert.ok(shown.some(function (l) { return /Project A/.test(l); }), 'ancestor kept');
+  assert.ok(shown.some(function (l) { return /body of alpha/.test(l); }), 'match section body kept');
+  assert.ok(!shown.some(function (l) { return /Beta/.test(l); }), 'non-matching sibling dropped');
+  assert.ok(shown.some(function (l) { return /Gamma/.test(l); }));
+});
+t('countStats scans the text', function () {
+  const d = doc('* TODO a\n* DONE b\n** c\n');
+  assert.deepStrictEqual(O.countStats(d), { total: 3, done: 1 });
 });
 
-t('sparseRows with no matches returns empty', function () {
-  const d = O.parse('* A :x:\n* B :y:\n');
-  const none = function (n) { return n.tags.indexOf('zzz') >= 0; };
-  assert.strictEqual(O.sparseRows(d.root, none).length, 0);
+// ------------------------------------------------------------------ round-trip
+t('everything survives: type text -> scan -> edit -> text', function () {
+  const src = '# notes buffer\n* TODO [#A] Ship it    :release:\n' +
+              '  SCHEDULED: <2026-10-06 Tue>\n  - step one\n';
+  const d = doc(src);
+  const before = text(d);
+  // structural edit through the API...
+  O.cycleState(d, 1);
+  // ...and a raw keystroke edit
+  d.lines[3] = '  - step one (done)';
+  assert.notStrictEqual(text(d), before);
+  // reparse fresh from exported text gives same structure
+  const d2 = doc(text(d));
+  assert.strictEqual(O.scan(d2).headings[1].state, 'STARTED');
+  assert.strictEqual(O.scan(d2).headings[1].scheduled.ts.date, '2026-10-06');
 });
 
 console.log('\n' + passed + ' passed, ' + failed + ' failed');
