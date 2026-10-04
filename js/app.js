@@ -20,6 +20,9 @@
   let dirty = false;
   const tagHistory = [];   // tag-entry history
   const colonHistory = []; // :command history
+  const searchHistory = [];
+  let viewFilter = null;   // {match: fn(node)->bool, label: string} — sparse tag view
+  let searchState = null;  // {q: string}
   function markDirty() { dirty = true; schedulePersist(); }
 
   function schedulePersist() {
@@ -56,6 +59,7 @@
     '      TODO, [#A] and :tags: all typed inline.',
     '    - hjkl / arrows move the cursor; TAB folds; T cycles TODO.',
     '    - M-<arrows> (or M-hjkl) move/demote/promote sections, like org.',
+    '    - / searches text; \\ opens a sparse tree by tag.',
     '*** DONE First steps                 :done:',
     '    CLOSED: <' + O.todayStr() + '>',
     '',
@@ -93,7 +97,7 @@
   const agendaBody = $('#agenda-body');
 
   // ------------------------------------------------------------- rendering
-  function rows() { return O.flatten(state.doc.root); }
+  function rows() { return viewFilter ? O.sparseRows(state.doc.root, viewFilter.match) : O.flatten(state.doc.root); }
   function cursorRow() {
     const rs = rows();
     for (let i = 0; i < rs.length; i++) {
@@ -103,7 +107,7 @@
         if (r.kind === 'content' && r.index === state.cursorContentIdx) return i;
       }
     }
-    return -1;
+    return -1; // cursor node not in the current view (e.g. filtered out)
   }
 
   function esc(s) {
@@ -175,6 +179,25 @@
 
   function render() {
     const rs = rows();
+
+    // If the cursor node fell out of the current view (e.g. filtered by a
+    // sparse tag view), re-anchor it onto the first visible row so the
+    // caret stays on screen.
+    const curIdx = rs.findIndex(function (r) {
+      return r.node.id === state.cursorId &&
+        (state.cursorContentIdx === null ? r.kind === 'headline' : r.kind === 'content' && r.index === state.cursorContentIdx);
+    });
+    if (curIdx === -1 && rs.length) {
+      let target = rs[0];
+      if (viewFilter) {
+        const fm = rs.findIndex(function (r) { return r.kind === 'headline' && viewFilter.match(r.node); });
+        if (fm >= 0) target = rs[fm];
+      }
+      state.cursorId = target.node.id;
+      state.cursorContentIdx = target.kind === 'content' ? target.index : null;
+      state.caretCol = 0;
+    }
+
     const cur = cursorRow();
     const today = O.todayStr();
     const frag = document.createDocumentFragment();
@@ -217,6 +240,14 @@
       }
       frag.appendChild(div);
     });
+    if (!rs.length) {
+      const div = document.createElement('div');
+      div.className = 'line content empty-hint';
+      div.textContent = viewFilter
+        ? '(no headings carry those tags — \\ or Esc restores the full tree)'
+        : '(empty buffer — press M-RET or C-RET for a heading, o for text)';
+      frag.appendChild(div);
+    }
 
     bufferEl.innerHTML = '';
     bufferEl.appendChild(frag);
@@ -231,7 +262,8 @@
     const n_ = rows().length;
     const meta = document.querySelector('#doc-meta');
     if (meta) meta.textContent = (state.doc.docTitle || 'UNTITLED') + '  ·  ' +
-      stats.done + '/' + stats.total + ' done';
+      stats.done + '/' + stats.total + ' done' +
+      (viewFilter ? '  ·  [' + viewFilter.label + ' — Esc for full tree]' : '');
     cursorInfo.textContent = 'lines:' + n_ + '  tasks:' + stats.total + ' done:' + stats.done +
       (state.cursorContentIdx === null ? '  [H]' : '  [B' + (state.cursorContentIdx + 1) + ']');
   }
@@ -346,6 +378,101 @@
   function moveCaret(delta) {
     const len = curLineText().length;
     state.caretCol = Math.max(0, Math.min(len, state.caretCol + delta));
+  }
+  // w/b: move by words on the current line (org text of the row).
+  const WORD_RE = /[A-Za-z0-9_\u00c0-\u024f]/;
+  function wordDelta(dir) {
+    const t = curLineText();
+    const col = state.caretCol;
+    if (dir > 0) {
+      let i = col;
+      if (i < t.length && WORD_RE.test(t[i])) while (i < t.length && WORD_RE.test(t[i])) i++;
+      while (i < t.length && !WORD_RE.test(t[i])) i++;
+      return i - col;
+    }
+    if (col <= 0) return 0;
+    let i = col - 1;
+    while (i > 0 && !WORD_RE.test(t[i])) i--;
+    while (i > 0 && WORD_RE.test(t[i - 1])) i--;
+    return i - col;
+  }
+  function gotoWord(dir, count) {
+    count = count || 1;
+    while (count--) moveCaret(wordDelta(dir));
+  }
+
+  // ------------------------------------------------------------- search (/) and sparse tag view (\)
+  function rowMatches(r, q) {
+    const text = r.kind === 'headline' ? (r.node.headline || '') : (r.text || '');
+    return text.toLowerCase().indexOf(q.toLowerCase()) >= 0;
+  }
+  function gotoSearchMatch(dir) {
+    if (!searchState || !searchState.q) { flash('no search active — press / first'); return; }
+    const rs = rows();
+    if (!rs.length) { flash('buffer is empty', 'warn'); return; }
+    const start = cursorRow() + dir;
+    for (let step = 0; step < rs.length; step++) {
+      const j = (start + dir * step + rs.length) % rs.length;
+      if (rowMatches(rs[j], searchState.q)) {
+        selectRow(j); render();
+        flash('search: ' + searchState.q);
+        return;
+      }
+    }
+    flash('no match for: ' + searchState.q, 'warn');
+  }
+  function searchPrompt() {
+    minibufferPrompt('search text, n / N repeat', function (q) {
+      q = (q || '').trim();
+      if (!q) { searchState = null; return; }
+      searchState = { q: q };
+      gotoSearchMatch(+1);
+    }, { history: searchHistory, prefix: '/' });
+  }
+  function tagViewPrompt() {
+    minibufferPrompt('tags to show; space = AND, | = OR, empty = clear', function (v) {
+      v = (v || '').trim();
+      if (!v) { clearViewFilter(); return; }
+      const groups = v.split(/\s+/).map(function (g) {
+        return g.split('|').map(function (t) { return t.replace(/[^A-Za-z0-9_@#]/g, '').toLowerCase(); }).filter(Boolean);
+      }).filter(function (g) { return g.length; });
+      if (!groups.length) { clearViewFilter(); return; }
+      viewFilter = {
+        label: 'tags: ' + v,
+        match: function (n) {
+          const tags = (n.tags || []).map(function (t) { return t.toLowerCase(); });
+          return groups.every(function (g) { return g.some(function (t) { return tags.indexOf(t) >= 0; }); });
+        },
+      };
+      state.cursorContentIdx = null;
+      render();
+      // move point onto the first matched heading (org tags-view behaviour)
+      const rs = rows();
+      const fm = rs.findIndex(function (r) { return r.kind === 'headline' && viewFilter.match(r.node); });
+      if (fm >= 0) { selectRow(fm); render(); }
+      flash(viewFilter.label);
+    }, { history: tagHistory, prefix: 'tags: ' });
+  }
+  function clearViewFilter() {
+    if (!viewFilter) return;
+    viewFilter = null;
+    render();
+    const n = curNode();
+    if (!n) { state.cursorId = null; }
+    flash('full tree restored');
+  }
+  // A freshly created heading may be invisible in the sparse tag view
+  // (no matching tag, no matching ancestor) — drop the filter so the
+  // user sees what they made.
+  function ensureVisibleInFilter(node) {
+    if (!viewFilter) return;
+    let p = node;
+    while (p && p !== state.doc.root) {
+      if (viewFilter.match(p)) return;
+      p = p.__parent;
+    }
+    viewFilter = null;
+    flash('tag view cleared to show new heading');
   }
 
   function nextSiblingNode() {
@@ -695,8 +822,8 @@
     ['CURSOR', [
       ['h / l / ← / →', 'left / right on the line'],
       ['j / k / ↓ / ↑', 'down / up (body lines too)'],
-      ['w / b', 'next / prev heading'],
-      ['W / B', 'next / prev same-level heading'],
+      ['w / b', 'next / prev word on the line'],
+      ['W / B', 'next / prev heading'],
       ['g g / G', 'top / bottom'],
       ['`', 'toggle agenda view'],
       ['(count) j/k/h/l', 'e.g. 5j jumps down 5 rows'],
@@ -716,7 +843,7 @@
       ['dd', 'kill subtree (headlines) / line'],
       ['cc', 'change line (insert)'],
       ['y / p', 'yank subtree / paste below'],
-      ['o / O', 'new heading below / above'],
+      ['o / O', 'new body line below / above'],
       ['u / Ctrl-R', 'undo / redo'],
     ]],
     ['STRUCTURE', [
@@ -726,7 +853,8 @@
       ['M-left / M-right (M-h / M-l)', 'promote / demote section'],
       ['T / S-TAB', 'cycle TODO→STARTED→WAITING→DONE'],
       ['D', 'mark DONE'],
-      ['M-Enter', 'new heading below (in insert)'],
+      ['M-Enter / C-Enter', 'new heading below (also from insert)'],
+      ['C-S-Enter', 'new child heading below'],
     ]],
     ['TAGS & DATES', [
       ['t t', 'set tags (minibuffer, colon-separated)'],
@@ -735,6 +863,12 @@
       ['t x', 'clear both dates'],
       ['+ / -', 'deadline +1 / -1 day'],
       ['[ / ]', 'priority up / down (A B C)'],
+    ]],
+    ['SEARCH & VIEWS', [
+      ['/', 'search text; n / N = next / prev match'],
+      ['\\', 'tag view: sparse tree of headings with tags'],
+      ['(tags prompt)', 'space = AND, | = OR, empty clears'],
+      ['Esc', 'leave tag view, restore full tree'],
     ]],
     ['FILES & MISC', [
       ['gg a', 'toggle agenda view'],
@@ -857,6 +991,9 @@
       return;
     }
     if (promptActive) return; // input focused, stopPropagation handles it
+    // Esc restores the full tree when a tag view is active (normal mode only;
+    // in insert mode Esc still commits the edit)
+    if (e.key === 'Escape' && viewFilter && state.mode === 'normal') { e.preventDefault(); clearViewFilter(); return; }
 
     // ctrl combos in any mode
     if (e.ctrlKey && !e.altKey) {
@@ -914,10 +1051,10 @@
       case 'j': motionDown(count || 1); break;
       case 'k': motionUp(count || 1); break;
       case 'l': moveCaret(count || 1); break;
-      case 'w': gotoNextHeading(count || 1, false); break;
-      case 'b': gotoPrevHeading(count || 1, false); break;
-      case 'W': gotoNextHeading(count || 1, true); break;
-      case 'B': gotoPrevHeading(count || 1, true); break;
+      case 'w': gotoWord(+1, count || 1); break;
+      case 'b': gotoWord(-1, count || 1); break;
+      case 'W': gotoNextHeading(count || 1, false); break;
+      case 'B': gotoPrevHeading(count || 1, false); break;
       case 'g': pendingG = true; return; // wait for second g
       case 'G': { const rs = rows(); selectRow(rs.length - 1); render(); break; }
       // mode switches
@@ -927,32 +1064,20 @@
       case 'A': startInsert('end'); break;
       case 'o': {
         const n = curNode();
-        if (!n) break;
-        if (state.cursorContentIdx === null) {
-          // open a new sibling heading below (org M-RET style)
-          if (!n.__parent) { flash('no parent for sibling', 'warn'); break; }
-          const sib = O.insertSiblingAfter(n);
-          state.cursorId = sib.id; state.cursorContentIdx = null;
-          markDirty(); render(); startInsert('start');
-        } else {
-          n.content.splice(state.cursorContentIdx + 1, 0, '');
-          state.cursorContentIdx++;
-          markDirty(); render(); startInsert('start');
-        }
+        if (!n) { flash('empty buffer — M-RET or C-RET creates the first heading', 'hint'); break; }
+        const at = state.cursorContentIdx === null ? 0 : state.cursorContentIdx + 1;
+        n.content.splice(at, 0, '');
+        state.cursorContentIdx = at;
+        markDirty(); render(); startInsert('start');
         break;
       }
       case 'O': {
         const n = curNode();
-        if (!n) break;
-        if (state.cursorContentIdx === null) {
-          if (!n.__parent) { flash('no parent for sibling', 'warn'); break; }
-          const sib = O.insertSiblingBefore(n);
-          state.cursorId = sib.id; state.cursorContentIdx = null;
-          markDirty(); render(); startInsert('start');
-        } else {
-          n.content.splice(state.cursorContentIdx, 0, '');
-          markDirty(); render(); startInsert('start');
-        }
+        if (!n) { flash('empty buffer — M-RET or C-RET creates the first heading', 'hint'); break; }
+        const at = state.cursorContentIdx === null ? 0 : state.cursorContentIdx;
+        n.content.splice(at, 0, '');
+        state.cursorContentIdx = at;
+        markDirty(); render(); startInsert('start');
         break;
       }
       // fold
@@ -1005,6 +1130,11 @@
       // agenda (g a handled in capture-phase g-map)
       // help
       case '?': showHelp(true); break;
+      // search and sparse tag view
+      case '/': searchPrompt(); break;
+      case '\\': tagViewPrompt(); break;
+      case 'n': gotoSearchMatch(+1); break;
+      case 'N': gotoSearchMatch(-1); break;
       // undo
       case 'u': undo(); break;
       // colon commands
@@ -1083,27 +1213,54 @@
     render();
   }
 
-  // Capture phase: M-keys (org section moves), M-Enter, and g/z pending maps.
-  // Runs before every other keydown handler so Alt+arrows can't trigger the
-  // browser's back/forward navigation.
+  // Empty buffer: any heading-creating command seeds a first level-1 heading.
+  // Returns {n, seeded} — seeded means the node was just created for an empty doc.
+  function ensureNode() {
+    let n = curNode(), seeded = false;
+    if (!n) {
+      n = O.makeNode({ level: 1, headline: '' });
+      state.doc.root.children.push(n);
+      n.__parent = state.doc.root;
+      state.cursorId = n.id; state.cursorContentIdx = null;
+      seeded = true;
+    }
+    return { n: n, seeded: seeded };
+  }
+  function newSiblingBelow() {
+    const r = ensureNode();
+    const sib = r.seeded ? r.n : O.insertSiblingAfter(r.n);
+    state.cursorId = sib.id; state.cursorContentIdx = null;
+    ensureVisibleInFilter(sib);
+    snapshotSoon();
+    markDirty(); render(); startInsert('start');
+  }
+
+  // Enter combos first: C-S-Enter = new child heading · M-Enter / C-Enter = new sibling heading
   document.addEventListener('keydown', function (e) {
     if (promptActive) return; // minibuffer has focus; keys belong to it
     if (!$('#help-overlay').classList.contains('hidden')) return;
 
+    if (e.key === 'Enter' && (e.altKey || e.ctrlKey) && !e.shiftKey) {
+      // M-RET or C-RET: new sibling heading below (org-native), both modes
+      e.preventDefault(); e.stopPropagation();
+      if (state.mode === 'insert') exitInsert(true);
+      newSiblingBelow();
+      return;
+    }
+    if (e.ctrlKey && e.shiftKey && e.key === 'Enter') {
+      e.preventDefault(); e.stopPropagation();
+      if (state.mode === 'insert') exitInsert(true);
+      const r = ensureNode();
+      const child = O.insertChildEnd(r.n);
+      state.cursorId = child.id; state.cursorContentIdx = null;
+      ensureVisibleInFilter(child);
+      snapshotSoon();
+      markDirty(); render(); startInsert('start');
+      return;
+    }
+
     if (e.altKey && !e.ctrlKey) {
       const k = e.key;
-      if (k === 'Enter') {
-        // M-RET: new sibling heading below (org-native), both modes
-        e.preventDefault(); e.stopPropagation();
-        if (state.mode === 'insert') exitInsert(true);
-        const n = curNode();
-        if (!n || !n.__parent) return;
-        const sib = O.insertSiblingAfter(n);
-        state.cursorId = sib.id; state.cursorContentIdx = null;
-        snapshotSoon();
-        markDirty(); render(); startInsert('start');
-        return;
-      }
       if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'h', 'j', 'k', 'l'].indexOf(k) >= 0) {
         e.preventDefault(); e.stopPropagation();
         if (state.mode === 'insert') exitInsert(true); // commit, then move (normal mode)
@@ -1111,18 +1268,6 @@
         return;
       }
       return; // other M-keys: fall through to normal handling
-    }
-
-    if (e.ctrlKey && e.shiftKey && e.key === 'Enter') {
-      e.preventDefault(); e.stopPropagation();
-      if (state.mode === 'insert') exitInsert(true);
-      const n = curNode();
-      if (!n) return;
-      const child = O.insertChildEnd(n);
-      state.cursorId = child.id; state.cursorContentIdx = null;
-      snapshotSoon();
-      markDirty(); render(); startInsert('start');
-      return;
     }
 
     if (state.mode === 'insert') return;

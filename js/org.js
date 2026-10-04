@@ -195,6 +195,33 @@
     return rows;
   }
 
+  // Sparse-tree rows (org tags-view style): headings matching `matchFn`,
+  // with their ancestor chain kept so the structure stays intact, and the
+  // whole subtree of each match shown. Fold state is ignored.
+  // Row shape matches flatten(): {kind, node, text?, index?}
+  function sparseRows(root, matchFn) {
+    const rows = [];
+    function subtreeHasMatch(node) {
+      if (matchFn(node)) return true;
+      return node.children.some(subtreeHasMatch);
+    }
+    function walk(node, ancestorMatched) {
+      node.children.forEach(function (child) {
+        const selfMatch = matchFn(child);
+        if (!(ancestorMatched || selfMatch || subtreeHasMatch(child))) return;
+        rows.push({ kind: 'headline', node: child });
+        if (ancestorMatched || selfMatch) {
+          child.content.forEach(function (ln, idx) {
+            rows.push({ kind: 'content', node: child, text: ln, index: idx });
+          });
+        }
+        walk(child, ancestorMatched || selfMatch);
+      });
+    }
+    walk(root, false);
+    return rows;
+  }
+
   function serialize(root, docTitle, preface) {
     const out = [];
     if (docTitle) out.push('#+TITLE: ' + docTitle);
@@ -396,7 +423,7 @@
     parseDateInput: parseDateInput,
     WEEKDAYS: WEEKDAYS, MONTHS: MONTHS,
     makeNode: makeNode, parseHeadlineLine: parseHeadlineLine,
-    parse: parse, serialize: serialize, flatten: flatten,
+    parse: parse, serialize: serialize, flatten: flatten, sparseRows: sparseRows,
     toggleCollapsed: toggleCollapsed, cycleState: cycleState,
     setDeadline: setDeadline, setScheduled: setScheduled,
     addTag: addTag, removeTag: removeTag,

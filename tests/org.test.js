@@ -234,5 +234,36 @@ t('parseDateInput accepts ISO, dotted, today, relative', function () {
   assert.strictEqual(O.parseDateInput('2026-02-30'), null, 'invalid calendar date rejected');
 });
 
+t('sparseRows keeps ancestor chain + match subtree, drops the rest', function () {
+  const d = O.parse(
+    '* Project A          :work:\n' +
+    '** Alpha             :urgent:\n' +
+    '   body of alpha\n' +
+    '*** AlphaChild       :urgent:\n' +
+    '** Beta\n' +
+    '* Project B          :home:\n' +
+    '** Gamma             :urgent:\n'
+  );
+  const isUrgent = function (n) { return n.tags.indexOf('urgent') >= 0; };
+  const rs = O.sparseRows(d.root, isUrgent);
+  const heads = rs.filter(function (r) { return r.kind === 'headline'; }).map(function (r) { return r.node.headline; });
+  // Alpha matches; its ancestor Project A is kept for structure; Alpha's subtree
+  // (body + AlphaChild) is shown. Beta (no match) is hidden. Project B kept as
+  // ancestor of Gamma; Gamma matches.
+  assert.deepStrictEqual(heads, ['Project A', 'Alpha', 'AlphaChild', 'Project B', 'Gamma']);
+  // Alpha's body line is present (match => show subtree content)
+  const bodies = rs.filter(function (r) { return r.kind === 'content'; }).map(function (r) { return r.text; });
+  assert.deepStrictEqual(bodies, ['   body of alpha']);
+  // Project A itself does NOT match -> its own body/content would be omitted,
+  // and Beta (sibling, non-matching, no matching descendant) is gone.
+  assert.ok(heads.indexOf('Beta') === -1, 'non-matching sibling excluded');
+});
+
+t('sparseRows with no matches returns empty', function () {
+  const d = O.parse('* A :x:\n* B :y:\n');
+  const none = function (n) { return n.tags.indexOf('zzz') >= 0; };
+  assert.strictEqual(O.sparseRows(d.root, none).length, 0);
+});
+
 console.log('\n' + passed + ' passed, ' + failed + ' failed');
 process.exit(failed ? 1 : 0);

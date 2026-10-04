@@ -17,8 +17,10 @@ files, so your data is never locked in.
 - Plain-text editing: `i` on a heading edits the whole org line —
   type `TODO`, `[#A]`, `:tags:` directly as text
 - Agenda side panel (`` ` ``) with overdue items flagged, click-to-jump
+- Search (`/`, `n`/`N` repeat) and sparse tag view (`\` — subset of
+  headings carrying given tags, ancestor structure kept; Esc restores)
 - Org-style structure editing: `M-↑/↓` and `M-k/j` move sections among
-  siblings, `M-←/→` and `M-h/l` promote/demote, `M-RET` new heading
+  siblings, `M-←/→` and `M-h/l` promote/demote, `M-RET`/`C-RET` new heading
 - Dates are typed, org-style: `2026-10-05`, `5.10`, `today`, `+3d`, `-1w`
 - Org-ish plain-text format: everything round-trips through parse/serialize
 
@@ -29,16 +31,21 @@ Press `?` in the app for the full cheat sheet.
 | keys | what |
 |---|---|
 | `h j k l` / arrows | left / down / up / right (caret on the line) |
-| `w b W B` | next/prev heading, next/prev same-level |
+| `w b` | next / prev word on the line |
+| `W B` | next / prev heading |
 | `gg G` 3j | top, bottom, counts everywhere |
-| `i I a A o O` | insert at/after caret, line start/end; `o`/`O` create siblings |
+| `i I a A` | insert at/after caret, line start/end |
+| `o O` | new body line below / above |
+| `/` then `n` / `N` | search text, next / prev match |
+| `\` | sparse tag view (AND=space, OR=\|); Esc restores full tree |
 | `jk` Esc | leave insert mode (classic) |
 | `dd x y p` | kill subtree, delete body line, yank, paste |
 | `>> <<` | indent / outdent subtree |
 | `J K` | move subtree down / up |
 | `M-↑/↓` `M-k/j` | move section among siblings (org M-arrows) |
 | `M-←/→` `M-h/l` | promote / demote section |
-| `M-RET` | new heading below (also from insert mode) |
+| `M-RET` / `C-RET` | new heading below (also from insert mode) |
+| `C-S-RET` | new child heading below |
 | `T` (or `S-TAB`) | cycle TODO -> STARTED -> WAITING -> DONE |
 | `D` | straight to DONE |
 | `t t` | tags via minibuffer |
